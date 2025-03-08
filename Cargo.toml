@@ -1,0 +1,7 @@
+[workspace]
+
+members = [
+    "injector", "injected",
+]
+
+resolver = "2"
