@@ -66,7 +66,7 @@ impl AddressLocation {
 /// ```
 #[macro_export]
 macro_rules! init_enable_hook {
-    ( $( $hook: expr, @ $target_addr: ident -> $detour: expr ),* $(,)? ) => {
+    ( $( $hook: expr, @ $target_addr: ident -> $detour: expr );* $(;)? ) => {
         {
             use tracing::{error, debug};
             let mut succeed = true;

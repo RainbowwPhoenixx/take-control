@@ -35,7 +35,7 @@ pub fn init(dx_version: DxVersion) {
     };
 
     init_enable_hook!(
-        shape_engine::getInstance, @ shape_engine_get_instance_address -> ||                 shape_engine::getInstance.call(),
-        shape_engine::drawLine   , @ drawline_address                  -> |this, start, end| shape_engine::drawLine.call(this, start, end),
+        shape_engine::getInstance, @ shape_engine_get_instance_address -> ||                 shape_engine::getInstance.call();
+        shape_engine::drawLine   , @ drawline_address                  -> |this, start, end| shape_engine::drawLine.call(this, start, end);
     );
 }

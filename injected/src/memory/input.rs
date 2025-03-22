@@ -24,6 +24,6 @@ pub fn init(dx_version: DxVersion) {
     };
 
     init_enable_hook!(
-        GetMouseDeltaX, @ address -> |this| GetMouseDeltaX.call(this) ,
+        GetMouseDeltaX, @ address -> |this| GetMouseDeltaX.call(this);
     );
 }
