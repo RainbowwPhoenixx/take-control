@@ -4,8 +4,8 @@ use windows::{
 };
 
 pub mod input;
-pub mod renderer;
 pub mod physics;
+pub mod renderer;
 
 /// Methods for finding an address
 pub enum AddressLocation {

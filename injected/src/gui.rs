@@ -1,7 +1,6 @@
 use hudhook::*;
-use physx::prelude::Controller;
 
-use crate::memory::physics::character_controller::CONTROLLER;
+use crate::memory::input::input_manager;
 
 pub struct MyRenderLoop;
 
@@ -11,17 +10,8 @@ impl ImguiRenderLoop for MyRenderLoop {
             .position([0., 0.], imgui::Condition::FirstUseEver)
             .size([320., 200.], imgui::Condition::FirstUseEver)
             .build(|| {
-                ui.text("hi :3");
-
-                if let Some(capsule_controller) =
-                    unsafe { CONTROLLER.as_ref().and_then(|c| c.px_controller.as_ref()) }
-                {
-                    let pos = capsule_controller.get_position();
-                    ui.text(format!("pos: {:.3} {:.3} {:.3}", pos.x(), pos.y(), pos.z()));
-
-                    let tmp = unsafe { &CONTROLLER.as_ref().and_then(|c| c.character_controller_state.as_ref()).unwrap().transfrom };
-                    ui.text(format!("state: {tmp:#?}"));
-                }
+                let im = unsafe { input_manager::getInstance.call().as_mut().unwrap() };
+                ui.text(format!("{im:?}"));
             });
     }
 }

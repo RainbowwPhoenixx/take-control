@@ -30,7 +30,7 @@ pub fn try_inject() {
     let syringe = Syringe::for_process(target_process);
 
     let library = get_library_path();
-    
+
     if let Err(e) = syringe.inject(library) {
         println!("Failed to inject dll: {e}")
     } else {

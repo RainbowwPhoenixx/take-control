@@ -1,7 +1,9 @@
 [workspace]
 
 members = [
-    "injector", "injected",
+    "injector",
+    "injected",
+    "my_proc_macros",
 ]
 
 resolver = "2"

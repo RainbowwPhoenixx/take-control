@@ -4,9 +4,9 @@
 use hudhook::hooks::{dx11::ImguiDx11Hooks, dx12::ImguiDx12Hooks};
 use tracing::{error, info};
 
+mod common_game_types;
 mod gui;
 mod memory;
-mod common_game_types;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "stdcall" fn DllMain(
