@@ -23,7 +23,9 @@ pub unsafe extern "stdcall" fn DllMain(
             init_logger();
             info!("Logger started.");
 
+            info!("Initializing crash and panic handlers");
             init_panic_hook();
+            init_exception_handler();
 
             let dx_version = memory::DxVersion::get();
             info!("Initializing hud.");
@@ -96,4 +98,89 @@ fn init_panic_hook() {
 
         prev(info)
     });
+}
+
+// Just to log control crashes
+fn init_exception_handler() {
+    use windows::Win32::{
+        Foundation::{EXCEPTION_ACCESS_VIOLATION, EXCEPTION_STACK_OVERFLOW},
+        System::{
+            Diagnostics::Debug::{
+                EXCEPTION_EXECUTE_HANDLER, EXCEPTION_POINTERS, MAX_SYM_NAME,
+                RtlCaptureStackBackTrace, SYMBOL_INFO, SymCleanup, SymFromAddr, SymInitialize,
+            },
+            Threading::GetCurrentProcess,
+        },
+    };
+    
+    unsafe extern "system" fn handler(exceptioninfo: *mut EXCEPTION_POINTERS) -> i32 {
+        let exception_record = unsafe {
+            exceptioninfo
+                .as_ref()
+                .unwrap()
+                .ExceptionRecord
+                .as_ref()
+                .unwrap()
+        };
+
+        let cause = match exception_record.ExceptionCode {
+            EXCEPTION_ACCESS_VIOLATION | EXCEPTION_STACK_OVERFLOW => "Segmentation fault",
+            _ => return EXCEPTION_EXECUTE_HANDLER,
+        };
+
+        let mut buf = String::new();
+        buf += &format!("{cause} at {:p}\n", exception_record.ExceptionAddress);
+
+        // unwind the stack and log it
+        let process = unsafe { GetCurrentProcess() };
+
+        if let Err(e) =
+            unsafe { SymInitialize(process, windows::core::PCSTR(std::ptr::null()), true) }
+        {
+            buf += &format!(
+                "Failed to init symbols ({e:?}), crash report might look uglier than usual"
+            );
+        }
+
+        let stack = &mut [std::ptr::null_mut(); 100];
+        let frame_count = unsafe { RtlCaptureStackBackTrace(0, stack, None) } as usize;
+
+        for (frame_idx, &addr) in stack[0..frame_count].iter().enumerate() {
+            // This API is a joke. we have to do this fuckery to get a `SYMBOL_INFO` struct followed
+            // by a char buffer, cause that's what the API wants. Get your shit together windows.
+            let symbol_buf =
+                &mut [0_u8; size_of::<SYMBOL_INFO>() + MAX_SYM_NAME as usize * size_of::<char>()];
+            let symbol: &mut SYMBOL_INFO = unsafe { std::mem::transmute(symbol_buf as *mut _) };
+            symbol.SizeOfStruct = size_of::<SYMBOL_INFO>() as u32;
+            symbol.MaxNameLen = MAX_SYM_NAME;
+
+            let got_symbol = unsafe { SymFromAddr(process, addr as u64, None, symbol as _) };
+            let symbol_name = match got_symbol {
+                Ok(()) => {
+                    if symbol.NameLen == 0 {
+                        format!("{addr:p}")
+                    } else {
+                        unsafe { std::ffi::CStr::from_ptr(&symbol.Name as *const i8) }
+                            .to_string_lossy()
+                            .into_owned()
+                    }
+                }
+                Err(_) => {
+                    format!("{addr:p}")
+                }
+            };
+            buf += &format!("\t{}: {symbol_name}\n", frame_count - frame_idx - 1);
+        }
+
+        unsafe {
+            let _ = SymCleanup(process);
+        };
+        error!("{buf}");
+
+        EXCEPTION_EXECUTE_HANDLER
+    }
+
+    unsafe {
+        windows::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler(0, Some(handler))
+    };
 }
