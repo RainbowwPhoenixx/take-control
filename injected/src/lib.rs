@@ -1,15 +1,26 @@
 #![feature(panic_update_hook)]
 #![allow(static_mut_refs)]
+#![allow(internal_features)]
+#![feature(link_llvm_intrinsics)]
 
 use hudhook::hooks::{dx11::ImguiDx11Hooks, dx12::ImguiDx12Hooks};
 use tracing::{error, info};
+use windows::Win32::{
+    Foundation::HMODULE,
+    System::ProcessStatus::{
+        EnumProcessModules, GetModuleBaseNameA, GetModuleInformation, MODULEINFO,
+    },
+};
 
 mod common_game_types;
 mod gui;
 mod memory;
+mod script;
+mod tas_player;
+mod windows_types;
 
 #[unsafe(no_mangle)]
-pub unsafe extern "stdcall" fn DllMain(
+pub unsafe extern "system" fn DllMain(
     hmodule: hudhook::windows::Win32::Foundation::HINSTANCE,
     reason: u32,
     _: *mut std::ffi::c_void,
@@ -27,12 +38,11 @@ pub unsafe extern "stdcall" fn DllMain(
             init_panic_hook();
             init_exception_handler();
 
-            let dx_version = memory::DxVersion::get();
             info!("Initializing hud.");
-            init_hudhook(hmodule, dx_version);
+            init_hudhook(hmodule);
 
             info!("Initializing memory hooks.");
-            memory::init(dx_version);
+            memory::init();
         });
     }
 }
@@ -40,16 +50,13 @@ pub unsafe extern "stdcall" fn DllMain(
 /// Attempt to initialize hudhook for the given hook type.
 ///
 /// Returns true on success
-fn init_hudhook(
-    hmodule: windows::Win32::Foundation::HINSTANCE,
-    dx_version: memory::DxVersion,
-) -> bool {
-    let status = match dx_version {
+fn init_hudhook(hmodule: windows::Win32::Foundation::HINSTANCE) -> bool {
+    let status = match *crate::memory::DX_VERSION {
         memory::DxVersion::Dx11 => {
-            hudhook::Hudhook::builder().with::<ImguiDx11Hooks>(gui::MyRenderLoop)
+            hudhook::Hudhook::builder().with::<ImguiDx11Hooks>(gui::TasToolGui::new())
         }
         memory::DxVersion::Dx12 => {
-            hudhook::Hudhook::builder().with::<ImguiDx12Hooks>(gui::MyRenderLoop)
+            hudhook::Hudhook::builder().with::<ImguiDx12Hooks>(gui::TasToolGui::new())
         }
     }
     .with_hmodule(hmodule)
@@ -57,7 +64,10 @@ fn init_hudhook(
     .apply();
 
     if let Err(e) = status {
-        hudhook::tracing::error!("Couldn't apply hooks for {dx_version}: {e:?}");
+        hudhook::tracing::error!(
+            "Couldn't apply hooks for {}: {e:?}",
+            *crate::memory::DX_VERSION
+        );
         hudhook::eject();
         return false;
     }
@@ -67,7 +77,7 @@ fn init_hudhook(
 
 fn init_logger() {
     let file_appender = tracing_appender::rolling::never(
-        "C:\\Users\\rainbow\\Documents\\control-tas",
+        std::env::current_dir().unwrap(),
         "control_tas.log",
     );
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
@@ -112,7 +122,7 @@ fn init_exception_handler() {
             Threading::GetCurrentProcess,
         },
     };
-    
+
     unsafe extern "system" fn handler(exceptioninfo: *mut EXCEPTION_POINTERS) -> i32 {
         let exception_record = unsafe {
             exceptioninfo
@@ -133,6 +143,35 @@ fn init_exception_handler() {
 
         // unwind the stack and log it
         let process = unsafe { GetCurrentProcess() };
+
+        // Prepare module list
+        let mut modules = [HMODULE(0); 100];
+        let mut needed = 0;
+        let _ = unsafe {
+            EnumProcessModules(
+                process,
+                modules.as_mut_ptr(),
+                std::mem::size_of_val(&modules) as u32,
+                &mut needed,
+            )
+        };
+
+        let modules: Vec<_> = modules
+            .into_iter()
+            .filter_map(|hmodule| unsafe {
+                let mut module_info = MODULEINFO::default();
+                let res = GetModuleInformation(
+                    process,
+                    hmodule,
+                    &mut module_info,
+                    std::mem::size_of_val(&module_info) as u32,
+                );
+                match res {
+                    Ok(_) => Some(module_info),
+                    Err(_) => None,
+                }
+            })
+            .collect();
 
         if let Err(e) =
             unsafe { SymInitialize(process, windows::core::PCSTR(std::ptr::null()), true) }
@@ -158,18 +197,45 @@ fn init_exception_handler() {
             let symbol_name = match got_symbol {
                 Ok(()) => {
                     if symbol.NameLen == 0 {
-                        format!("{addr:p}")
+                        format!("No symbol")
                     } else {
-                        unsafe { std::ffi::CStr::from_ptr(&symbol.Name as *const i8) }
-                            .to_string_lossy()
-                            .into_owned()
+                        // Attempt to get module base address
+                        let base_addr = modules.iter().find(|module| {
+                            module.lpBaseOfDll < addr
+                                && addr
+                                    < unsafe { module.lpBaseOfDll.add(module.SizeOfImage as usize) }
+                        });
+
+                        // Attempt to get module name
+                        let mut module_name = [0; 255];
+                        let mut len = 0;
+                        if let Some(module_addr) = base_addr {
+                            len = unsafe {
+                                GetModuleBaseNameA(
+                                    process,
+                                    HMODULE(module_addr.lpBaseOfDll as isize),
+                                    &mut module_name,
+                                )
+                            } as usize;
+                        }
+
+                        let func_name =
+                            unsafe { std::ffi::CStr::from_ptr(&symbol.Name as *const i8) }
+                                .to_string_lossy()
+                                .into_owned();
+
+                        format!(
+                            "{}:{func_name}",
+                            String::from_utf8_lossy(&module_name[..len])
+                        )
                     }
                 }
-                Err(_) => {
-                    format!("{addr:p}")
-                }
+                Err(_e) => String::new(),
             };
-            buf += &format!("\t{}: {symbol_name}\n", frame_count - frame_idx - 1);
+            buf += &format!(
+                "\t{}: {symbol_name} ({addr:p})\n",
+                frame_count - frame_idx - 1
+            );
         }
 
         unsafe {

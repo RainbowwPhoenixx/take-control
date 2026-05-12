@@ -1,28 +1,75 @@
+#![allow(unused)]
+#![warn(unused_imports)]
+
+use std::cell::LazyCell;
+
 use windows::{
-    Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
+    Win32::System::{
+        LibraryLoader::{GetModuleHandleW, GetProcAddress},
+        ProcessStatus::{GetModuleInformation, MODULEINFO},
+        Threading::GetCurrentProcess,
+    },
     core::{PCSTR, PCWSTR},
 };
 
+pub mod app;
+pub mod control;
+pub mod coregame;
 pub mod input;
+pub mod net;
 pub mod physics;
 pub mod renderer;
+pub mod rl;
+
+#[allow(missing_abi)]
+unsafe extern "C" {
+    #[link_name = "llvm.returnaddress"]
+    fn return_address(a: i32) -> *const u8;
+}
+
+#[macro_export]
+macro_rules! caller_address {
+    () => {
+        unsafe { crate::memory::return_address(0) }
+    };
+}
 
 /// Methods for finding an address
 pub enum AddressLocation {
-    Address(usize),
-    Pointerchain { base: usize, offsets: Vec<isize> },
-    PatternScan(String),
-    ModuleExport { module_name: String, symbol: String },
+    Address {
+        module_name: String,
+        offset: usize,
+    },
+    Pointerchain {
+        base: usize,
+        offsets: Vec<isize>,
+    },
+    PatternScan {
+        module_name: String,
+        pattern: String,
+    },
+    ModuleExport {
+        module_name: String,
+        symbol: String,
+    },
 }
 
 impl AddressLocation {
     /// Resolve the address location into an address
-    fn resolve(&self) -> usize {
+    pub fn resolve(&self) -> usize {
         match self {
+            AddressLocation::Address {
+                module_name,
+                offset,
+            } => Self::get_module_base(&module_name) + offset,
             AddressLocation::ModuleExport {
                 module_name,
                 symbol,
             } => Self::get_module_symbol_address(module_name, symbol),
+            AddressLocation::PatternScan {
+                module_name,
+                pattern,
+            } => Self::get_module_pattern_address(&module_name, &pattern),
             _ => todo!(),
         }
     }
@@ -44,10 +91,70 @@ impl AddressLocation {
         unsafe {
             let handle = GetModuleHandleW(PCWSTR(module.as_ptr() as _))
                 .expect(&format!("Failed to find module {module_str}"));
+
             GetProcAddress(handle, PCSTR(symbol.as_ptr() as _)).expect(&format!(
                 "Failed to find symbol {symbol_str} in module {module_str}"
             )) as usize
         }
+    }
+
+    fn get_module_pattern_address(module_str: &str, pattern_str: &str) -> usize {
+        let info = Self::get_module_info(module_str);
+
+        // Construct slice with the module info
+        let haystack = unsafe {
+            std::slice::from_raw_parts(info.lpBaseOfDll as *const u8, info.SizeOfImage as usize)
+        };
+
+        // Scan for the pattern
+        let mut found_addr = None;
+        let base_addr = info.lpBaseOfDll as usize;
+        aobscan::PatternBuilder::from_ida_style(pattern_str)
+            .unwrap()
+            .build()
+            .scan(haystack, |addr| {
+                found_addr = Some(base_addr + addr);
+                false
+            });
+
+        found_addr.expect(&format!(
+            "Failed to find pattern [{pattern_str}] in module {module_str}"
+        ))
+    }
+
+    fn get_module_info(module_str: &str) -> MODULEINFO {
+        let module = module_str
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>();
+
+        // Get module handle
+        let handle = unsafe {
+            GetModuleHandleW(PCWSTR(module.as_ptr() as _))
+                .expect(&format!("Failed to find module {module_str}"))
+        };
+
+        // Get module info
+        let mut info = MODULEINFO {
+            lpBaseOfDll: std::ptr::null_mut(),
+            SizeOfImage: 0,
+            EntryPoint: std::ptr::null_mut(),
+        };
+
+        unsafe {
+            GetModuleInformation(
+                GetCurrentProcess(),
+                handle,
+                &mut info as *mut _,
+                std::mem::size_of::<MODULEINFO>() as u32,
+            )
+        };
+
+        info
+    }
+
+    fn get_module_base(module_str: &str) -> usize {
+        Self::get_module_info(module_str).lpBaseOfDll as usize
     }
 }
 
@@ -73,23 +180,58 @@ macro_rules! init_enable_hook {
             $(
                 let name = stringify!($hook);
                 let addr_location: AddressLocation = $target_addr;
-                // init
-                if let Err(e) =
-                    unsafe { $hook.initialize(std::mem::transmute(addr_location.resolve()), $detour) }
-                {
-                    error!("Failed to init hook {name}! {e}");
-                    succeed = false;
-                }
+                // TODO: make resolve return an error instead of panicking
+                let address = std::panic::catch_unwind( || addr_location.resolve() );
 
-                // enable
-                if let Err(e) = unsafe { $hook.enable() } {
-                    error!("Failed to enable hook {name}! {e}");
-                    succeed = false
-                } else {
-                    debug!("Enabled hook {name}")
+                match address {
+                    Err(e) => {
+                        error!("Could not init hook {name}: panic while resolving address");
+                        succeed = false;
+                    }
+                    Ok(addr) => {
+                        // init
+                        if let Err(e) =
+                            unsafe { $hook.initialize(std::mem::transmute(addr), $detour) }
+                        {
+                            error!("Failed to init hook {name}! {e}");
+                            succeed = false;
+                        }
+        
+                        // enable
+                        if let Err(e) = unsafe { $hook.enable() } {
+                            error!("Failed to enable hook {name}! {e}");
+                            succeed = false
+                        } else {
+                            debug!("Enabled hook {name}")
+                        }
+                    }
                 }
             )*
             succeed
+        }
+    };
+}
+
+/// Creates a closure for detouring that logs the input arguments then calls the original function and logs the result
+#[macro_export]
+macro_rules! log_call {
+    ( $hook:expr, $( $args:ident ),* ) => {
+        |$($args),*| {
+            debug!("{} called with args: {:?}", stringify!($hook), ($($args),*));
+            let res = $hook.call($($args),*);
+            debug!("{} returned: {:?}", stringify!($hook), res);
+            res
+        }
+    };
+}
+
+/// Creates a closure for detouring that logs the input arguments then calls the original function and logs the result
+#[macro_export]
+macro_rules! transparent_call {
+    ( $hook:expr, $( $args:ident ),* ) => {
+        |$($args),*| {
+            let res = $hook.call($($args),*);
+            res
         }
     };
 }
@@ -99,6 +241,8 @@ pub enum DxVersion {
     Dx11,
     Dx12,
 }
+
+pub const DX_VERSION: LazyCell<DxVersion> = LazyCell::new(|| DxVersion::get());
 
 impl DxVersion {
     /// Find out which version of the game we are running on and return it.
@@ -125,8 +269,13 @@ impl std::fmt::Display for DxVersion {
 }
 
 /// Init all the hooks
-pub fn init(dx_version: DxVersion) {
-    input::init(dx_version);
-    renderer::init(dx_version);
-    physics::init(dx_version);
+pub fn init() {
+    input::init();
+    renderer::init();
+    physics::init();
+    coregame::init();
+    net::init();
+    rl::init();
+    app::init();
+    control::init();
 }

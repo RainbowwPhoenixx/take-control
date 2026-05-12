@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dll-syringe = "0.15.2"
+dll-syringe = "0.17.1"
 injected = { path = "../injected", artifact = "cdylib" }

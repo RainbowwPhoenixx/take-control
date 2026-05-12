@@ -13,10 +13,11 @@ pub mod physics_scene {
 }
 
 pub mod character_controller {
+    use my_proc_macros::PubDebug;
     use physx::controller::PxCapsuleController;
     use retour::static_detour;
 
-    use crate::common_game_types::SIMDTransform;
+    use crate::common_game_types::{SIMDTransform, Vec2, Vec4};
 
     static_detour! {
         pub static CharacterController_ctor: unsafe extern "system" fn(*mut CharacterController, *mut CharacterControllerState, usize, i32) -> *mut CharacterController;
@@ -35,18 +36,26 @@ pub mod character_controller {
         pub is_using_gravity: bool,
     }
 
+    #[derive(PubDebug)]
     #[repr(C)]
     pub struct CharacterController {
         pub character_controller_state: *mut CharacterControllerState,
-        pub pad: [u8; 0x58],
+        _pad1: [u8; 0x2C],
+        pub is_supported: bool,
+        pub has_ground_gap: bool,
+        pub force_slide: bool,
+        pub fall_stopped: bool,
+        _pad2: [u8; 0x8],
+        pub vel: Vec4<f32>,
+        pub ground_vel: Vec2<f64>,
         pub px_controller: *mut PxCapsuleController<()>,
     }
 
     pub static mut CONTROLLER: *mut CharacterController = std::ptr::null_mut();
 }
 
-pub fn init(dx_version: DxVersion) {
-    let module_name: String = match dx_version {
+pub fn init() {
+    let module_name: String = match *crate::memory::DX_VERSION {
         DxVersion::Dx11 => "physics_rmdwin7_f.dll",
         DxVersion::Dx12 => "physics_rmdwin10_f.dll",
     }

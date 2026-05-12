@@ -14,7 +14,6 @@ pub fn pub_debug(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
 
     let name = &ast.ident;
-    let substruct_name = syn::Ident::new(&format!("{name}Debug"), name.span());
 
     let fields = if let syn::Data::Struct(syn::DataStruct {
         fields: syn::Fields::Named(syn::FieldsNamed { ref named, .. }),
@@ -25,31 +24,19 @@ pub fn pub_debug(input: TokenStream) -> TokenStream {
     } else {
         panic!("This macro is only supported for structs")
     };
-
-    let pub_fields = fields.iter().filter(is_pub);
-
-    let copy_fields = fields.iter().filter(is_pub).map(|f| {
+    let debug_fields = fields.iter().filter(is_pub).map(|f| {
         let name = &f.ident;
         quote! {
-            #name: self.#name
+            .field(stringify!(#name), &self.#name)
         }
     });
 
     let generated = quote! {
         impl std::fmt::Debug for #name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-
-                #[derive(Debug)]
-                #[allow(unused)]
-                struct #substruct_name {
-                    #(#pub_fields),*
-                }
-
-                let tmp = #substruct_name {
-                    #(#copy_fields),*
-                };
-
-                write!(f, "{tmp:#?}")
+                f.debug_struct(stringify!(#name))
+                    #(#debug_fields)*
+                    .finish()
             }
         }
     };

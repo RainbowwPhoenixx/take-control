@@ -11,8 +11,8 @@ static_detour! {
     pub static GetMouseDeltaX: unsafe extern "system" fn(usize) -> f32;
 }
 
-pub fn init(dx_version: DxVersion) {
-    let module_name: String = match dx_version {
+pub fn init() {
+    let module_name: String = match *crate::memory::DX_VERSION {
         DxVersion::Dx11 => "input_rmdwin7_f.dll",
         DxVersion::Dx12 => "input_rmdwin10_f.dll",
     }
@@ -30,6 +30,10 @@ pub fn init(dx_version: DxVersion) {
         module_name: module_name.clone(),
         symbol: "?getActionName@InputManager@input@@QEAA?AV?$InplaceString@$0IA@@r@@H@Z".into(),
     };
+    let get_action_address = AddressLocation::ModuleExport {
+        module_name: module_name.clone(),
+        symbol: "?getAction@InputManager@input@@QEAAHAEBV?$InplaceWString@$0IA@@r@@@Z".into(),
+    };
     let get_gamepad_address = AddressLocation::ModuleExport {
         module_name: module_name.clone(),
         symbol: "?getGamepad@InputManager@input@@QEAAPEAVGamepad@2@XZ".into(),
@@ -42,14 +46,35 @@ pub fn init(dx_version: DxVersion) {
         module_name: module_name.clone(),
         symbol: "?getAxis@Gamepad@input@@QEBAMH@Z".into(),
     };
+    let kb_key_down_address = AddressLocation::ModuleExport {
+        module_name: module_name.clone(),
+        symbol: "?keyDown@Keyboard@input@@QEBA_NH@Z".into(),
+    };
+    let kb_key_pressed_address = AddressLocation::ModuleExport {
+        module_name: module_name.clone(),
+        symbol: "?keyPressed@Keyboard@input@@QEBA_NH@Z".into(),
+    };
+    let i_key_down_address = AddressLocation::ModuleExport {
+        module_name: module_name.clone(),
+        symbol: "?keyDown@InputX86@input@@QEBA_NG@Z".into(),
+    };
+    let i_key_pressed_address = AddressLocation::ModuleExport {
+        module_name: module_name.clone(),
+        symbol: "?keyClicked@InputX86@input@@QEAA_NG@Z".into(),
+    };
 
     init_enable_hook!(
         GetMouseDeltaX,               @ get_mouse_deltax_address -> |this| GetMouseDeltaX.call(this);
         input_manager::getInstance,   @ get_instance_address     -> || input_manager::getInstance.call();
+        input_manager::getAction    , @ get_action_address       -> |this, string| input_manager::getAction.call(this, string);
         input_manager::getActionName, @ get_action_name_address  -> |this, string, action_id| input_manager::getActionName.call(this, string, action_id);
         input_manager::getGamepad,    @ get_gamepad_address      -> |this| input_manager::getGamepad.call(this);
         input_manager::setConsole,    @ set_console_address      -> |this, value| input_manager::setConsole.call(this, value);
         gamepad::getAxis,             @ get_axis_address         -> |this, axis| gamepad::getAxis.call(this, axis);
+        keyboard::keyDown,            @ kb_key_down_address         -> |this, key| {let res = keyboard::keyDown.call(this, key); debug!("keyboard::keyDown({key}) -> {res}"); res};
+        keyboard::keyPressed,         @ kb_key_pressed_address      -> |this, key| {let res = keyboard::keyPressed.call(this, key); debug!("keyboard::keyPressed({key}) -> {res}"); res};
+        input_x86::keyDown,           @ i_key_down_address         -> |this, key| {let res = input_x86::keyDown.call(this, key); debug!("input_x86::keyDown({key}) -> {res}"); res};
+        input_x86::keyClicked,        @ i_key_pressed_address      -> |this, key| {let res = input_x86::keyClicked.call(this, key); debug!("input_x86::keyClicked({key}) -> {res}"); res};
     );
 }
 
@@ -86,6 +111,7 @@ pub mod input_manager {
 
     static_detour! {
         pub static getInstance: unsafe extern "system" fn() -> *mut InputManager;
+        pub static getAction: unsafe extern "system" fn(*mut InputManager, *mut InplaceString<128>) -> u32;
         pub static getActionName: unsafe extern "system" fn(*mut InputManager, *mut InplaceString<128>, u32) -> *mut InplaceString<128>;
         pub static getGamepad: unsafe extern "system" fn(*mut InputManager) -> *mut gamepad::Gamepad;
         pub static setConsole: unsafe extern "system" fn(*mut InputManager, bool);
@@ -107,6 +133,24 @@ pub mod gamepad {
 
     static_detour! {
         pub static getAxis: unsafe extern "system" fn(*mut Gamepad, GamepadAxis) -> f32;
+    }
+}
+
+pub mod keyboard {
+    use retour::static_detour;
+
+    static_detour! {
+        pub static keyDown: unsafe extern "system" fn(usize, u32) -> bool;
+        pub static keyPressed: unsafe extern "system" fn(usize, u32) -> bool;
+    }
+}
+
+pub mod input_x86 {
+    use retour::static_detour;
+
+    static_detour! {
+        pub static keyDown: unsafe extern "system" fn(usize, u16) -> bool;
+        pub static keyClicked: unsafe extern "system" fn(usize, u16) -> bool;
     }
 }
 
